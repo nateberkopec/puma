@@ -1,3 +1,24 @@
+## 7.3.0 / 2026-03-24
+
+* Features
+  * Added an API to update minimum and maximum thread counts at runtime ([#3658])
+  * Added separate configuration hooks for single-mode and cluster-mode servers ([#3621])
+  * Added `env["puma.mark_as_io_bound"]` to mark requests as I/O-bound ([#3816], [#3894])
+  * Added an `on_force` option to `shutdown_debug` ([#3671])
+  * Added SIGPWR-triggered backtrace dumping support on Linux/JRuby ([#3829])
+
+* Bugfixes
+  * Fixed phased restart with `fork_worker` so new workers are not forked from a stale worker 0 ([#3853])
+
+* Performance
+  * Improved request parsing efficiency with JRuby HTTP parser updates and header key caching ([#3838], [#3874])
+
+* Docs
+  * Added a gRPC guide ([#3885])
+
+* CI
+  * Expanded parallel integration testing to all Rubies and improved reliability for JRuby, SSL, socket, and shared test helpers ([#3866], [#3870], [#3873], [#3876], [#3878], [#3879], [#3880], [#3881])
+
 ## 7.2.0 / 2026-01-20
 
 * Features
@@ -2294,6 +2315,24 @@ be added back in a future date when a java Puma::MiniSSL is added.
 * Bugfixes
   * Your bugfix goes here <Most recent on the top, like GitHub> (#Github Number)
 
+[#3894]:https://github.com/puma/puma/pull/3894     "PR by Joshua Young, merged 2026-03-07"
+[#3885]:https://github.com/puma/puma/pull/3885     "PR by Joshua Young, merged 2026-02-18"
+[#3881]:https://github.com/puma/puma/pull/3881     "PR by MSP-Greg, merged 2026-02-22"
+[#3880]:https://github.com/puma/puma/pull/3880     "PR by MSP-Greg, merged 2026-02-22"
+[#3879]:https://github.com/puma/puma/pull/3879     "PR by Sasha Stadnyk, merged 2026-02-22"
+[#3878]:https://github.com/puma/puma/pull/3878     "PR by MSP-Greg, merged 2026-01-29"
+[#3876]:https://github.com/puma/puma/pull/3876     "PR by Nate Berkopec, merged 2026-01-28"
+[#3874]:https://github.com/puma/puma/pull/3874     "PR by Hadrien Blanc, merged 2026-01-28"
+[#3873]:https://github.com/puma/puma/pull/3873     "PR by Nate Berkopec, merged 2026-02-09"
+[#3870]:https://github.com/puma/puma/pull/3870     "PR by Nate Berkopec, merged 2026-01-27"
+[#3866]:https://github.com/puma/puma/pull/3866     "PR by MSP-Greg, merged 2026-01-23"
+[#3853]:https://github.com/puma/puma/pull/3853     "PR by Krzysztof Jablonski, merged 2026-03-09"
+[#3838]:https://github.com/puma/puma/pull/3838     "PR by Charles Oliver Nutter, merged 2026-01-31"
+[#3829]:https://github.com/puma/puma/pull/3829     "PR by Nate Berkopec, merged 2026-01-27"
+[#3816]:https://github.com/puma/puma/pull/3816     "PR by Jean Boussier, merged 2026-03-07"
+[#3671]:https://github.com/puma/puma/pull/3671     "PR by Joshua Young, merged 2026-03-08"
+[#3658]:https://github.com/puma/puma/pull/3658     "PR by Yuki Nishijima, merged 2026-02-18"
+[#3621]:https://github.com/puma/puma/pull/3621     "PR by Joshua Young, merged 2026-02-22"
 [#3863]:https://github.com/puma/puma/pull/3863     "PR by Nate Berkopec, merged 2026-01-20"
 [#3861]:https://github.com/puma/puma/pull/3861     "PR by MSP-Greg, merged 2026-01-20"
 [#3860]:https://github.com/puma/puma/pull/3860     "PR by MSP-Greg, merged 2026-01-16"
