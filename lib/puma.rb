@@ -9,7 +9,11 @@ require 'stringio'
 require 'thread'
 
 # use require, see https://github.com/puma/puma/pull/2381
-require 'puma/puma_http11'
+if RUBY_ENGINE == "spinel"
+  require_relative 'puma/spinel_http_parser'
+else
+  require 'puma/puma_http11'
+end
 
 require_relative 'puma/detect'
 require_relative 'puma/json_serialization'
@@ -18,18 +22,24 @@ module Puma
   # when Puma is loaded via `Puma::CLI`, all files are loaded via
   # `require_relative`.  The below are for non-standard loading
   autoload :Const,     "#{__dir__}/puma/const"
-  autoload :Server,    "#{__dir__}/puma/server"
+  if RUBY_ENGINE == "spinel"
+    require_relative 'puma/spinel_server'
+    require_relative 'puma/spinel_single'
+  else
+    autoload :Server,  "#{__dir__}/puma/server"
+  end
   autoload :Launcher,  "#{__dir__}/puma/launcher"
   autoload :LogWriter, "#{__dir__}/puma/log_writer"
 
   # at present, MiniSSL::Engine is only defined in extension code (puma_http11),
   # not in minissl.rb
-  HAS_SSL = const_defined?(:MiniSSL, false) && MiniSSL.const_defined?(:Engine, false)
+  HAS_SSL = RUBY_ENGINE != "spinel" && const_defined?(:MiniSSL, false) && MiniSSL.const_defined?(:Engine, false)
 
   HAS_UNIX_SOCKET = Object.const_defined?(:UNIXSocket) && !IS_WINDOWS
 
   if HAS_SSL
     require_relative 'puma/minissl'
+    require_relative 'puma/minissl/context_builder'
   else
     module MiniSSL
       # this class is defined so that it exists when Puma is compiled

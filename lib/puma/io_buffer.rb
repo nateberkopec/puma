@@ -3,48 +3,59 @@
 require 'stringio'
 
 module Puma
-  class IOBuffer < StringIO
+  class IOBuffer
     def initialize
-      super.binmode
+      @io = StringIO.new
+      @io.binmode if @io.respond_to?(:binmode)
     end
 
     def empty?
       length.zero?
     end
 
+    def length
+      @io.length
+    end
+
+    def size
+      @io.size
+    end
+
+    def write(*strs)
+      strs.sum { |str| @io.write(str) }
+    end
+
+    def <<(str)
+      @io << str
+      self
+    end
+
     def reset
-      truncate 0
-      rewind
+      @io.truncate 0
+      @io.rewind
     end
 
     def to_s
-      rewind
-      read
+      @io.rewind
+      @io.read
     end
 
     # Read & Reset - returns contents and resets
     # @return [String] StringIO contents
     def read_and_reset
-      rewind
-      str = read
-      truncate 0
-      rewind
+      @io.rewind
+      str = @io.read
+      @io.truncate 0
+      @io.rewind
       str
     end
 
-    alias_method :clear, :reset
+    def clear
+      reset
+    end
 
-    # Create an `IoBuffer#append` method that accepts multiple strings and writes them
-    if RUBY_ENGINE == 'truffleruby'
-      # truffleruby (24.2.1, like ruby 3.3.7)
-      #   StringIO.new.write("a", "b") # => `write': wrong number of arguments (given 2, expected 1) (ArgumentError)
-      def append(*strs)
-        strs.each { |str| write str }
-      end
-    else
-      # Ruby 3+
-      #   StringIO.new.write("a", "b") # => 2
-      alias_method :append, :write
+    def append(*strs)
+      write(*strs)
     end
   end
 end

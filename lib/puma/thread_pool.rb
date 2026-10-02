@@ -53,20 +53,20 @@ module Puma
         @thread&.alive?
       end
 
-      def join(...)
-        @thread.join(...)
+      def join(timeout = nil)
+        @thread.join(timeout)
       end
 
-      def kill(...)
-        @thread.kill(...)
+      def kill
+        @thread.kill
       end
 
       def [](key)
         @thread[key]
       end
 
-      def raise(...)
-        @thread.raise(...)
+      def raise(error)
+        @thread.raise(error)
       end
     end
 

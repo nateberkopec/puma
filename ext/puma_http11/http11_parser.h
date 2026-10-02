@@ -7,8 +7,10 @@
 #ifndef http11_parser_h
 #define http11_parser_h
 
+#ifndef PUMA_STANDALONE_PARSER
 #define RSTRING_NOT_MODIFIED 1
 #include "ruby.h"
+#endif
 
 #include <sys/types.h>
 
@@ -37,8 +39,10 @@ typedef struct puma_parser {
   size_t field_len;
   size_t query_start;
 
+#ifndef PUMA_STANDALONE_PARSER
   VALUE request;
   VALUE body;
+#endif
 
   field_cb http_field;
   element_cb request_method;

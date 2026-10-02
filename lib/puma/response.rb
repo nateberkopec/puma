@@ -416,6 +416,12 @@ module Puma
     end
     private :fetch_status_code
 
+    def request_keep_alive?(env)
+      connection = env.fetch(HTTP_CONNECTION, "").downcase
+      env[SERVER_PROTOCOL] == HTTP_11 ? connection != CLOSE : connection == KEEP_ALIVE
+    end
+    private :request_keep_alive?
+
     # Processes and write headers to the IOBuffer.
     # @param env [Hash] see Puma::Client#env, from request
     # @param status [Integer] the status returned by the Rack application
@@ -439,7 +445,7 @@ module Puma
       http_11 = env[SERVER_PROTOCOL] == HTTP_11
       if http_11
         resp_info[:allow_chunked] = true
-        resp_info[:keep_alive] = env.fetch(HTTP_CONNECTION, "").downcase != CLOSE
+        resp_info[:keep_alive] = request_keep_alive?(env)
 
         # An optimization. The most common response is 200, so we can
         # reply with the proper 200 status without having to compute
@@ -454,7 +460,7 @@ module Puma
         end
       else
         resp_info[:allow_chunked] = false
-        resp_info[:keep_alive] = env.fetch(HTTP_CONNECTION, "").downcase == KEEP_ALIVE
+        resp_info[:keep_alive] = request_keep_alive?(env)
 
         # Same optimization as above for HTTP/1.1
         #

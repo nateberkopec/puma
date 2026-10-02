@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative 'http_request'
+
 module Puma
 
   #———————————————————————— DO NOT USE — this class is for internal use only ———
@@ -11,21 +13,14 @@ module Puma
   module ClientEnv # :nodoc:
 
     include Puma::Const
+    include Puma::HttpRequest
 
     def validate_env
-      return unless @env[SERVER_PROTOCOL] == HTTP_11
-
-      unless @env.key? HTTP_HOST
-        @error_status_code = 400
-        @env[HTTP_CONNECTION] = CLOSE
-        raise HttpParserError, "Missing Host header"
-      end
-
-      if @env[HTTP_HOST].empty?
-        @error_status_code = 400
-        @env[HTTP_CONNECTION] = CLOSE
-        raise HttpParserError, "Invalid Host header"
-      end
+      validate_request_env!(@env)
+    rescue HttpParserError
+      @error_status_code = 400
+      @env[HTTP_CONNECTION] = CLOSE
+      raise
     end
 
     # Given a Hash +env+ for the request read from +client+, add

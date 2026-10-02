@@ -19,7 +19,7 @@ module Puma
 
     class PidFormatter
       def call(str)
-        "[#{$$}] #{str}"
+        "[#{Process.pid}] #{str}"
       end
     end
 
@@ -31,13 +31,13 @@ module Puma
     attr_accessor :formatter, :custom_logger
 
     # Create a LogWriter that prints to +stdout+ and +stderr+.
-    def initialize(stdout, stderr, env: ENV)
+    def initialize(stdout, stderr, env: nil)
       @formatter = DefaultFormatter.new
       @custom_logger = nil
       @stdout = stdout
       @stderr = stderr
 
-      @debug = env.key?('PUMA_DEBUG')
+      @debug = env ? env.key?('PUMA_DEBUG') : ENV.key?('PUMA_DEBUG')
       @error_logger = ErrorLogger.new(@stderr, env: env)
     end
 
@@ -45,15 +45,15 @@ module Puma
 
     # Returns an LogWriter object which writes its status to
     # two StringIO objects.
-    def self.strings(env: ENV)
+    def self.strings(env: nil)
       LogWriter.new(StringIO.new, StringIO.new, env: env)
     end
 
-    def self.stdio(env: ENV)
+    def self.stdio(env: nil)
       LogWriter.new($stdout, $stderr, env: env)
     end
 
-    def self.null(env: ENV)
+    def self.null(env: nil)
       n = NullIO.new
       LogWriter.new(n, n, env: env)
     end

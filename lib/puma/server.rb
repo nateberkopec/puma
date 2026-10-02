@@ -134,7 +134,7 @@ module Puma
 
       @binder = Binder.new(log_writer, @options)
 
-      ENV['RACK_ENV'] ||= "development"
+      ENV['RACK_ENV'] = "development" unless ENV['RACK_ENV']
 
       @mode = :http
 
@@ -336,7 +336,7 @@ module Puma
     end
 
     def handle_servers
-      @env_set_http_version = Object.const_defined?(:Rack) && ::Rack.respond_to?(:release) &&
+      @env_set_http_version = RUBY_ENGINE != "spinel" && Object.const_defined?(:Rack) && ::Rack.respond_to?(:release) &&
         Gem::Version.new(::Rack.release) < Gem::Version.new('3.1.0')
 
       begin
@@ -714,21 +714,18 @@ module Puma
       @thread_pool&.reset_max
     end
 
-    # below are 'delegations' to binder
-    # remove in Puma 7?
-
-
     def add_tcp_listener(host, port, optimize_for_latency = true, backlog = 1024)
-      @binder.add_tcp_listener host, port, optimize_for_latency, backlog
+      @binder.add Binding.tcp(host, port, optimize_for_latency, backlog)
     end
 
     def add_ssl_listener(host, port, ctx, optimize_for_latency = true,
                          backlog = 1024)
-      @binder.add_ssl_listener host, port, ctx, optimize_for_latency, backlog
+      ctx ||= @binder.localhost_authority_context
+      @binder.add Binding.ssl(host, port, ctx, optimize_for_latency, backlog)
     end
 
     def add_unix_listener(path, umask = nil, mode = nil, backlog = 1024)
-      @binder.add_unix_listener path, umask, mode, backlog
+      @binder.add Binding.unix(path, umask, mode, backlog)
     end
 
     # Updates the minimum and maximum number of threads in the thread pool.
@@ -774,7 +771,6 @@ module Puma
       end
     end
 
-    # @!attribute [r] connected_ports
     def connected_ports
       @binder.connected_ports
     end

@@ -14,8 +14,7 @@ Gem::Specification.new do |s|
   s.email = ["evan@phx.io"]
   s.executables = ["puma", "pumactl"]
   s.extensions = ["ext/puma_http11/extconf.rb"]
-  s.add_runtime_dependency "nio4r", "~> 2.0"
-  s.files = `git ls-files -- bin docs ext lib tools`.split("\n") +
+  s.files = `git ls-files -- bin docs ext lib spinel tools`.split("\n") +
             %w[History.md LICENSE README.md]
   s.homepage = "https://puma.io"
 

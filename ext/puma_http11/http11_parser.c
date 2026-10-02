@@ -62,8 +62,10 @@ int puma_parser_init(puma_parser *parser)  {
   parser->nread = 0;
   parser->field_len = 0;
   parser->field_start = 0;
+#ifndef PUMA_STANDALONE_PARSER
   parser->request = Qnil;
   parser->body = Qnil;
+#endif
 
   return 1;
 }

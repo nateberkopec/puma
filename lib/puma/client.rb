@@ -194,6 +194,7 @@ module Puma
     end
 
     def close
+      @parser.close if @parser.respond_to?(:close)
       tempfile_close
       begin
         @io.close

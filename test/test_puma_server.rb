@@ -1877,6 +1877,14 @@ class TestPumaServer < PumaTest
     assert_equal selector.backend, backend
   end
 
+  def test_io_select_selector
+    server_run(io_selector_backend: :select)
+
+    selector = @server.instance_variable_get(:@reactor).instance_variable_get(:@selector)
+    assert_instance_of Puma::IOSelectSelector, selector
+    assert_equal 'http', send_http_read_response.body
+  end
+
   def test_drain_on_shutdown(drain=true)
     num_connections = 10
 

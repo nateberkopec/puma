@@ -1,3 +1,4 @@
+if RUBY_ENGINE != "spinel"
 module Puma
   module MiniSSL
     class ContextBuilder
@@ -93,4 +94,5 @@ module Puma
       attr_reader :params, :log_writer
     end
   end
+end
 end

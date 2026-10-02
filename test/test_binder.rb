@@ -20,9 +20,7 @@ class TestBinderBase < PumaTest
   end
 
   def teardown
-    @binder.ios.reject! { |io| Minitest::Mock === io || io.to_io.closed? }
     @binder.close
-    @binder.unix_paths.select! { |path| File.exist? path }
     @binder.close_listeners
   end
 
@@ -196,8 +194,6 @@ class TestBinderParallel < TestBinderBase
 
     assert_match %r!unix://#{unix_path}!, @log_writer.stdout.string
 
-    refute_includes @binder.unix_paths, unix_path
-
     @binder.close_listeners
 
     assert File.exist?(unix_path)
@@ -304,7 +300,7 @@ class TestBinderParallel < TestBinderBase
     skip_unless :ssl
     @binder.parse ["ssl://localhost:0?#{ssl_query}"], @log_writer
 
-    env_hash = @binder.envs[@binder.ios.first]
+    env_hash = @binder.env(@binder.ios.first)
 
     @binder.proto_env.each do |k,v|
       assert env_hash[k] == v
@@ -315,19 +311,17 @@ class TestBinderParallel < TestBinderBase
     skip_unless :ssl
     @binder.parse ["ssl://localhost:0?#{ssl_query}"], @log_writer
 
-    env_hash = @binder.envs[@binder.ios.first]
+    env_hash = @binder.env(@binder.ios.first)
 
     assert_equal @log_writer.stderr, env_hash["rack.errors"]
   end
 
-  def test_close_calls_close_on_ios
-    @mocked_ios = [Minitest::Mock.new, Minitest::Mock.new]
-    @mocked_ios.each { |m| m.expect(:close, true) }
-    @binder.ios = @mocked_ios
+  def test_close_closes_bindings
+    listener = @binder.add Puma::Binding.tcp("127.0.0.1", 0)
 
     @binder.close
 
-    assert @mocked_ios.map(&:verify).all?
+    assert listener.closed?
   end
 
   def test_redirects_for_restart_creates_a_hash

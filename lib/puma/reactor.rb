@@ -1,14 +1,15 @@
 # frozen_string_literal: true
 
+require_relative 'selector_factory'
+
 module Puma
   class UnsupportedBackend < StandardError; end
 
   # Monitors a collection of IO objects, calling a block whenever
   # any monitored object either receives data or times out, or when the Reactor shuts down.
   #
-  # The waiting/wake up is performed with nio4r, which will use the appropriate backend (libev,
-  # Java NIO or just plain IO#select). The call to `NIO::Selector#select` will
-  # 'wakeup' any IO object that receives data.
+  # The waiting/wake up is performed with nio4r when available, or IO.select.
+  # The selector wakes up any IO object that receives data.
   #
   # This class additionally tracks a timeout for every added object,
   # and wakes up any object when its timeout elapses.
@@ -25,13 +26,7 @@ module Puma
     # The provided block will be invoked when an IO has data available to read,
     # its timeout elapses, or when the Reactor shuts down.
     def initialize(backend, &block)
-      require 'nio'
-      valid_backends = [:auto, *::NIO::Selector.backends]
-      unless valid_backends.include?(backend)
-        raise ArgumentError.new("unsupported IO selector backend: #{backend} (available backends: #{valid_backends.join(', ')})")
-      end
-
-      @selector = ::NIO::Selector.new(NIO::Selector.backends.delete(backend))
+      @selector = Selectors.build(backend)
       @input = Queue.new
       @timeouts = []
       @block = block

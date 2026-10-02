@@ -65,6 +65,8 @@ _workers_, and we sometimes call the threads created by Puma's
 
 The `queue_requests` option is `true` by default, enabling the separate reactor
 thread used to buffer requests as described above.
+The reactor uses nio4r when it is installed and falls back to `IO.select` when
+it is not. Set `io_selector_backend :select` to use `IO.select` explicitly.
 
 If set to `false`, this buffer will not be used for connections while waiting
 for the request to arrive.

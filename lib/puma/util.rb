@@ -13,22 +13,12 @@ module Puma
     # Escapes and unescapes a URI escaped string with
     # +encoding+. +encoding+ will be the target encoding of the string
     # returned, and it defaults to UTF-8
-    if defined?(::Encoding)
-      def escape(s, encoding = Encoding::UTF_8)
-        URI.encode_www_form_component(s, encoding)
-      end
+    def escape(s, encoding = nil)
+      URI.encode_www_form_component(s, encoding || Encoding::UTF_8)
+    end
 
-      def unescape(s, encoding = Encoding::UTF_8)
-        URI.decode_www_form_component(s, encoding)
-      end
-    else
-      def escape(s, encoding = nil)
-        URI.encode_www_form_component(s, encoding)
-      end
-
-      def unescape(s, encoding = nil)
-        URI.decode_www_form_component(s, encoding)
-      end
+    def unescape(s, encoding = nil)
+      URI.decode_www_form_component(s, encoding || Encoding::UTF_8)
     end
     module_function :unescape, :escape
 
@@ -40,13 +30,16 @@ module Puma
     # cookies by changing the characters used in the second
     # parameter (which defaults to '&;').
     def parse_query(qs, d = nil, &unescaper)
-      unescaper ||= method(:unescape)
-
       params = {}
 
       (qs || '').split(d ? /[#{d}] */n : DEFAULT_SEP).each do |p|
         next if p.empty?
-        k, v = p.split('=', 2).map(&unescaper)
+        k, v = p.split('=', 2)
+        # Spinel infers the result type through Proc#call, but not yield.
+        # rubocop:disable Performance/RedundantBlockCall
+        k = unescaper ? unescaper.call(k) : unescape(k)
+        v = unescaper ? unescaper.call(v) : unescape(v) if v
+        # rubocop:enable Performance/RedundantBlockCall
 
         if cur = params[k]
           if cur.class == Array

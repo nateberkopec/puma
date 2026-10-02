@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+if RUBY_ENGINE != "spinel"
 begin
   require 'io/wait' unless Puma::HAS_NATIVE_IO_WAIT
 rescue LoadError
@@ -140,8 +141,8 @@ module Puma
         end
       end
 
-      alias_method :syswrite, :write
-      alias_method :<<, :write
+      alias syswrite write
+      alias << write
 
       # This is a temporary fix to deal with websockets code using
       # write_nonblock.
@@ -266,8 +267,8 @@ module Puma
         end
 
         # aliases for backwards compatibility
-        alias_method :ssl_cipher_list, :cipher_suites
-        alias_method :ssl_cipher_list=, :cipher_suites=
+        alias ssl_cipher_list cipher_suites
+        alias ssl_cipher_list= cipher_suites=
 
         def protocols=(list)
           list = list.split(',').map(&:strip) if list.is_a?(String)
@@ -455,4 +456,5 @@ module Puma
       end
     end
   end
+end
 end

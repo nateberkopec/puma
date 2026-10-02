@@ -1,30 +1,19 @@
 # frozen_string_literal: true
 
-require 'uri'
-require 'socket'
-
-require_relative 'const'
-require_relative 'util'
+require_relative 'binding'
 
 module Puma
-
-  if HAS_SSL
-    require_relative 'minissl'
-    require_relative 'minissl/context_builder'
-  end
-
   class Binder
     include Puma::Const
 
     RACK_VERSION = [1,6].freeze
 
-    def initialize(log_writer, options, env: ENV)
+    def initialize(log_writer, options, env: nil)
       @log_writer = log_writer
       @options = options
-      @listeners = []
+      @bindings = []
       @inherited_fds = {}
       @activated_sockets = {}
-      @unix_paths = []
       @env = env
 
       @proto_env = {
@@ -34,7 +23,7 @@ module Puma
         "rack.multiprocess".freeze => options[:workers] >= 1,
         "rack.run_once".freeze => false,
         RACK_URL_SCHEME => options[:rack_url_scheme],
-        "SCRIPT_NAME".freeze => env['SCRIPT_NAME'] || "",
+        "SCRIPT_NAME".freeze => (env ? env['SCRIPT_NAME'] : ENV['SCRIPT_NAME']) || "",
 
         # I'd like to set a default CONTENT_TYPE here but some things
         # depend on their not being a default set and inferring
@@ -50,23 +39,20 @@ module Puma
       }
 
       @envs = {}
-      @ios = []
     end
 
-    attr_reader :ios
-
     # @version 5.0.0
-    attr_reader :activated_sockets, :envs, :inherited_fds, :listeners, :proto_env, :unix_paths
+    attr_reader :activated_sockets, :inherited_fds, :proto_env
 
-    # @version 5.0.0
-    attr_writer :ios, :listeners
+    def ios = @bindings.flat_map(&:ios)
+    def listeners = @bindings.filter_map(&:listener_entry)
 
     def env(sock)
       @envs.fetch(sock, @proto_env)
     end
 
     def close
-      @ios.each { |i| i.close }
+      @bindings.each(&:close)
     end
 
     # @!attribute [r] connected_ports
@@ -90,17 +76,10 @@ module Puma
     # @version 5.0.0
     #
     def create_activated_fds(env_hash)
-      @log_writer.debug { "ENV['LISTEN_FDS'] #{@env['LISTEN_FDS'].inspect}  env_hash['LISTEN_PID'] #{env_hash['LISTEN_PID'].inspect}" }
+      @log_writer.debug { "ENV['LISTEN_FDS'] #{(@env ? @env['LISTEN_FDS'] : ENV['LISTEN_FDS']).inspect}  env_hash['LISTEN_PID'] #{env_hash['LISTEN_PID'].inspect}" }
       return [] unless env_hash['LISTEN_FDS'] && env_hash['LISTEN_PID'].to_i == $$
       env_hash['LISTEN_FDS'].to_i.times do |index|
-        sock = TCPServer.for_fd(socket_activation_fd(index))
-        key = begin # Try to parse as a path
-          [:unix, Socket.unpack_sockaddr_un(sock.getsockname)]
-        rescue ArgumentError # Try to parse as a port/ip
-          port, addr = Socket.unpack_sockaddr_in(sock.getsockname)
-          addr = "[#{addr}]" if addr&.include? ':'
-          [:tcp, addr, port]
-        end
+        key, sock = Binding.activate socket_activation_fd(index)
         @activated_sockets[key] = sock
         @log_writer.debug { "Registered #{key.join ':'} for activation from LISTEN_FDS" }
       end
@@ -120,28 +99,11 @@ module Puma
     def synthesize_binds_from_activated_fs(binds, only_matching)
       return binds unless activated_sockets.any?
 
-      activated_binds = []
+      activated_binds = activated_sockets.keys.map { |key| Binding.activated_url key, binds }
 
-      activated_sockets.keys.each do |proto, addr, port|
-        if port
-          tcp_url = "#{proto}://#{addr}:#{port}"
-          ssl_url = "ssl://#{addr}:#{port}"
-          ssl_url_prefix = "#{ssl_url}?"
+      return activated_binds if only_matching
 
-          existing = binds.find { |bind| bind == tcp_url || bind == ssl_url || bind.start_with?(ssl_url_prefix) }
-
-          activated_binds << (existing || tcp_url)
-        else
-          # TODO: can there be a SSL bind without a port?
-          activated_binds << "#{proto}://#{addr}"
-        end
-      end
-
-      if only_matching
-        activated_binds
-      else
-        binds | activated_binds
-      end
+      binds | activated_binds
     end
 
     def before_parse(&block)
@@ -154,159 +116,16 @@ module Puma
       before_parse.each(&:call)
       log_writer ||= @log_writer
       binds.each do |str|
-        uri = URI.parse str
-        case uri.scheme
-        when "tcp"
-          if fd = @inherited_fds.delete(str)
-            io = inherit_tcp_listener uri.host, uri.port, fd
-            log_writer.log "* Inherited #{str}"
-          elsif sock = @activated_sockets.delete([ :tcp, uri.host, uri.port ])
-            io = inherit_tcp_listener uri.host, uri.port, sock
-            log_writer.log "* Activated #{str}"
-          else
-            ios_len = @ios.length
-            params = Util.parse_query uri.query
-
-            low_latency = params.key?('low_latency') && params['low_latency'] != 'false'
-            backlog = params.fetch('backlog', 1024).to_i
-
-            io = add_tcp_listener uri.host, uri.port, low_latency, backlog
-
-            @ios[ios_len..-1].each do |i|
-              addr = loc_addr_str i
-              log_writer.log "* #{log_msg} on http://#{addr}"
-            end
-          end
-
-          @listeners << [str, io] if io
-        when "unix"
-          path = "#{uri.host}#{uri.path}".gsub("%20", " ")
-          abstract = false
-          if str.start_with? 'unix://@'
-            raise "OS does not support abstract UNIXSockets" unless Puma.abstract_unix_socket?
-            abstract = true
-            path = "@#{path}"
-          end
-
-          if fd = @inherited_fds.delete(str)
-            @unix_paths << path unless abstract || File.exist?(path)
-            io = inherit_unix_listener path, fd
-            log_writer.log "* Inherited #{str}"
-          elsif sock = @activated_sockets.delete([ :unix, path ]) ||
-              !abstract && @activated_sockets.delete([ :unix, File.realdirpath(path) ])
-            @unix_paths << path unless abstract || File.exist?(path)
-            io = inherit_unix_listener path, sock
-            log_writer.log "* Activated #{str}"
-          else
-            umask = nil
-            mode = nil
-            backlog = 1024
-
-            if uri.query
-              params = Util.parse_query uri.query
-              if u = params['umask']
-                # Use Integer() to respect the 0 prefix as octal
-                umask = Integer(u)
-              end
-
-              if u = params['mode']
-                mode = Integer('0'+u)
-              end
-
-              if u = params['backlog']
-                backlog = Integer(u)
-              end
-            end
-
-            @unix_paths << path unless abstract || File.exist?(path)
-            io = add_unix_listener path, umask, mode, backlog
-            log_writer.log "* #{log_msg} on #{str}"
-          end
-
-          @listeners << [str, io]
-        when "ssl"
-          cert_key = %w[cert key]
-
-          raise "Puma compiled without SSL support" unless HAS_SSL
-
-          params = Util.parse_query uri.query
-
-          # If key and certs are not defined and localhost gem is required.
-          # localhost gem will be used for self signed
-          # Load localhost authority if not loaded.
-          # Ruby 3 `values_at` accepts an array, earlier do not
-          if params.values_at(*cert_key).all? { |v| v.to_s.empty? }
-            ctx = localhost_authority && localhost_authority_context
-          end
-
-          ctx ||=
-            begin
-              # Extract cert_pem and key_pem from options[:store] if present
-              cert_key.each do |v|
-                if params[v]&.start_with?('store:')
-                  index = Integer(params.delete(v).split('store:').last)
-                  params["#{v}_pem"] = @options[:store][index]
-                end
-              end
-              MiniSSL::ContextBuilder.new(params, @log_writer).context
-            end
-
-          if fd = @inherited_fds.delete(str)
-            log_writer.log "* Inherited #{str}"
-            io = inherit_ssl_listener fd, ctx
-          elsif sock = @activated_sockets.delete([ :tcp, uri.host, uri.port ])
-            io = inherit_ssl_listener sock, ctx
-            log_writer.log "* Activated #{str}"
-          else
-            ios_len = @ios.length
-            backlog = params.fetch('backlog', 1024).to_i
-            low_latency = params['low_latency'] != 'false'
-            io = add_ssl_listener uri.host, uri.port, ctx, low_latency, backlog
-
-            @ios[ios_len..-1].each do |i|
-              addr = loc_addr_str i
-              log_writer.log "* #{log_msg} on ssl://#{addr}?#{uri.query}"
-            end
-          end
-
-          @listeners << [str, io] if io
-        else
+        binding = Binding.parse(str, @options, @log_writer) { localhost_authority_context }
+        unless binding
           log_writer.error "Invalid URI: #{str}"
+          next
         end
+        acquire(binding) { |item| item.bind str, @inherited_fds, @activated_sockets }
+        binding.log log_writer, log_msg
       end
-
-      # If we inherited fds but didn't use them (because of a
-      # configuration change), then be sure to close them.
-      @inherited_fds.each do |str, fd|
-        log_writer.log "* Closing unused inherited connection: #{str}"
-
-        begin
-          IO.for_fd(fd).close
-        rescue SystemCallError
-        end
-
-        # We have to unlink a unix socket path that's not being used
-        uri = URI.parse str
-        if uri.scheme == "unix"
-          path = "#{uri.host}#{uri.path}"
-          File.unlink path
-        end
-      end
-
-      # Also close any unused activated sockets
-      unless @activated_sockets.empty?
-        fds = @ios.map(&:to_i)
-        @activated_sockets.each do |key, sock|
-          next if fds.include? sock.to_i
-          log_writer.log "* Closing unused activated socket: #{key.first}://#{key[1..-1].join ':'}"
-          begin
-            sock.close
-          rescue SystemCallError
-          end
-          # We have to unlink a unix socket path that's not being used
-          File.unlink key[1] if key.first == :unix
-        end
-      end
+      close_unused_inherited log_writer
+      close_unused_activated log_writer
     end
 
     def localhost_authority
@@ -314,193 +133,69 @@ module Puma
     end
 
     def localhost_authority_context
-      return unless localhost_authority
-
-      key_path, crt_path = if [:key_path, :certificate_path].all? { |m| localhost_authority.respond_to?(m) }
-        [localhost_authority.key_path, localhost_authority.certificate_path]
-      else
-        local_certificates_path = File.expand_path("~/.localhost")
-        [File.join(local_certificates_path, "localhost.key"), File.join(local_certificates_path, "localhost.crt")]
-      end
-      MiniSSL::ContextBuilder.new({ "key" => key_path, "cert" => crt_path }, @log_writer).context
+      Binding.authority_context localhost_authority, @log_writer
     end
 
-    # Tell the server to listen on host +host+, port +port+.
-    # If +optimize_for_latency+ is true (the default) then clients connecting
-    # will be optimized for latency over throughput.
-    #
-    # +backlog+ indicates how many unaccepted connections the kernel should
-    # allow to accumulate before returning connection refused.
-    #
-    def add_tcp_listener(host, port, optimize_for_latency=true, backlog=1024)
-      if host == "localhost"
-        loopback_addresses.each do |addr|
-          add_tcp_listener addr, port, optimize_for_latency, backlog
-        end
-        return
-      end
-
-      host = host[1..-2] if host&.start_with? '['
-      tcp_server = TCPServer.new(host, port)
-
-      if optimize_for_latency
-        tcp_server.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
-      end
-      tcp_server.setsockopt(Socket::SOL_SOCKET,Socket::SO_REUSEADDR, true)
-      tcp_server.listen backlog
-
-      @ios << tcp_server
-      tcp_server
-    end
-
-    def inherit_tcp_listener(host, port, fd)
-      s = fd.kind_of?(::TCPServer) ? fd : ::TCPServer.for_fd(fd)
-
-      @ios << s
-      s
-    end
-
-    def add_ssl_listener(host, port, ctx,
-                         optimize_for_latency=true, backlog=1024)
-
-      raise "Puma compiled without SSL support" unless HAS_SSL
-      # Puma will try to use local authority context if context is supplied nil
-      ctx ||= localhost_authority_context
-
-      if host == "localhost"
-        loopback_addresses.each do |addr|
-          add_ssl_listener addr, port, ctx, optimize_for_latency, backlog
-        end
-        return
-      end
-
-      host = host[1..-2] if host&.start_with? '['
-      s = TCPServer.new(host, port)
-      if optimize_for_latency
-        s.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
-      end
-      s.setsockopt(Socket::SOL_SOCKET,Socket::SO_REUSEADDR, true)
-      s.listen backlog
-
-      ssl = MiniSSL::Server.new s, ctx
-      env = @proto_env.dup
-      env[HTTPS_KEY] = HTTPS
-      @envs[ssl] = env
-
-      @ios << ssl
-      s
-    end
-
-    def inherit_ssl_listener(fd, ctx)
-      raise "Puma compiled without SSL support" unless HAS_SSL
-      # Puma will try to use local authority context if context is supplied nil
-      ctx ||= localhost_authority_context
-
-      s = fd.kind_of?(::TCPServer) ? fd : ::TCPServer.for_fd(fd)
-
-      ssl = MiniSSL::Server.new(s, ctx)
-
-      env = @proto_env.dup
-      env[HTTPS_KEY] = HTTPS
-      @envs[ssl] = env
-
-      @ios << ssl
-
-      s
-    end
-
-    # Tell the server to listen on +path+ as a UNIX domain socket.
-    #
-    def add_unix_listener(path, umask=nil, mode=nil, backlog=1024)
-      # Let anyone connect by default
-      umask ||= 0
-
-      begin
-        old_mask = File.umask(umask)
-
-        if File.exist? path
-          begin
-            old = UNIXSocket.new path
-          rescue SystemCallError, IOError
-            File.unlink path
-          else
-            old.close
-            raise "There is already a server bound to: #{path}"
-          end
-        end
-        s = UNIXServer.new path.sub(/\A@/, "\0") # check for abstract UNIXSocket
-        s.listen backlog
-        @ios << s
-      ensure
-        File.umask old_mask
-      end
-
-      if mode
-        File.chmod mode, path
-      end
-
-      env = @proto_env.dup
-      env[REMOTE_ADDR] = "127.0.0.1"
-      @envs[s] = env
-
-      s
-    end
-
-    def inherit_unix_listener(path, fd)
-      s = fd.kind_of?(::TCPServer) ? fd : ::UNIXServer.for_fd(fd)
-
-      @ios << s
-
-      env = @proto_env.dup
-      env[REMOTE_ADDR] = "127.0.0.1"
-      @envs[s] = env
-
-      s
+    def add(binding)
+      acquire(binding, &:add)
     end
 
     def close_listeners
-      @listeners.each do |l, io|
-        begin
-          io.close unless io.closed?
-          uri = URI.parse l
-          next unless uri.scheme == 'unix'
-          unix_path = "#{uri.host}#{uri.path}"
-          File.unlink unix_path if @unix_paths.include?(unix_path) && File.exist?(unix_path)
-        rescue Errno::EBADF
-        end
-      end
+      @bindings.each(&:close_listener)
     end
 
     def redirects_for_restart
-      redirects = @listeners.map { |a| [a[1].to_i, a[1].to_i] }.to_h
+      redirects = listeners.map { |a| [a[1].to_i, a[1].to_i] }.to_h
       redirects[:close_others] = true
       redirects
     end
 
     # @version 5.0.0
     def redirects_for_restart_env
-      @listeners.each_with_object({}).with_index do |(listen, memo), i|
+      listeners.each_with_object({}).with_index do |(listen, memo), i|
         memo["PUMA_INHERIT_#{i}"] = "#{listen[1].to_i}:#{listen[0]}"
       end
     end
 
     private
 
-    # @!attribute [r] loopback_addresses
-    def loopback_addresses
-      t = Socket.ip_address_list.select do |addrinfo|
-        addrinfo.ipv6_loopback? || addrinfo.ipv4_loopback?
-      end
-      t.map! { |addrinfo| addrinfo.ip_address }; t.uniq!; t
+    def acquire(binding)
+      yield binding
+      binding.listener
+    ensure
+      register_binding binding
     end
 
-    def loc_addr_str(io)
-      loc_addr = io.to_io.local_address
-      if loc_addr.ipv6?
-        "[#{loc_addr.ip_unpack[0]}]:#{loc_addr.ip_unpack[1]}"
-      else
-        loc_addr.ip_unpack.join(':')
+    def register_binding(binding)
+      binding.freeze
+      @bindings << binding
+      return unless additions = binding.env
+      binding.ios.each { |io| @envs[io] = @proto_env.merge additions }
+    end
+
+    def close_unused_inherited(log_writer)
+      @inherited_fds.each do |url, fd|
+        log_writer.log "* Closing unused inherited connection: #{url}"
+        close_quietly fd
+        Binding.remove_unused_url url
       end
+    end
+
+    def close_unused_activated(log_writer)
+      return if @activated_sockets.empty?
+      used_fds = ios.map { |io| io.to_io.to_i }
+      @activated_sockets.each do |key, socket|
+        next if used_fds.include? socket.to_i
+        log_writer.log "* Closing unused activated socket: #{Binding.activated_url key, []}"
+        close_quietly socket
+        Binding.remove_unused_activation key
+      end
+    end
+
+    def close_quietly(io)
+      io = IO.for_fd(io) if Integer === io
+      io.close
+    rescue SystemCallError
     end
 
     # @version 5.0.0

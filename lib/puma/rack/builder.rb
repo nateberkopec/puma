@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'optparse'
+
 module Puma
 end
 
@@ -15,7 +17,11 @@ module Puma::Rack
 
         lineno = 1
         opts.on("-e", "--eval LINE", "evaluate a LINE of code") { |line|
-          eval line, TOPLEVEL_BINDING, "-e", lineno
+          if RUBY_ENGINE == "spinel"
+            raise NotImplementedError, "runtime Ruby evaluation is unavailable on Spinel"
+          else
+            eval line, TOPLEVEL_BINDING, "-e", lineno
+          end
           lineno += 1
         }
 
@@ -82,7 +88,11 @@ module Puma::Rack
         end
 
         opts.on_tail("--version", "Show version") do
-          puts "Rack #{Rack.version} (Release: #{Rack.release})"
+          if RUBY_ENGINE == "spinel"
+            puts "Rack version unavailable under Spinel"
+          else
+            puts "Rack #{Rack.version} (Release: #{Rack.release})"
+          end
           exit
         end
       end
@@ -169,8 +179,12 @@ module Puma::Rack
     end
 
     def self.new_from_string(builder_script, file="(rackup)")
-      eval "Puma::Rack::Builder.new {\n" + builder_script + "\n}.to_app",
-        TOPLEVEL_BINDING, file, 0
+      if RUBY_ENGINE == "spinel"
+        raise NotImplementedError, "runtime rackup evaluation is unavailable on Spinel"
+      else
+        eval "Puma::Rack::Builder.new {\n" + builder_script + "\n}.to_app",
+          TOPLEVEL_BINDING, file, 0
+      end
     end
 
     def initialize(default_app = nil, &block)

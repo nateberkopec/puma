@@ -103,7 +103,7 @@ module Puma
     PUMA_VERSION = VERSION = "8.0.2"
     CODE_NAME = "Into the Arena"
 
-    PUMA_SERVER_STRING = ["puma", PUMA_VERSION, CODE_NAME].join(" ").freeze
+    PUMA_SERVER_STRING = ["puma", VERSION, CODE_NAME].join(" ").freeze
 
     # How long to wait when getting some write blocking on the socket when
     # sending data back

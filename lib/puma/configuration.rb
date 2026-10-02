@@ -7,6 +7,7 @@ require_relative 'plugin'
 require_relative 'const'
 require_relative 'dsl'
 require_relative 'events'
+require_relative 'log_writer'
 
 module Puma
   # A class used for storing "leveled" configuration options.
@@ -182,7 +183,7 @@ module Puma
       workers: 0,
     }
 
-    def initialize(user_options={}, default_options = {}, env = ENV, &block)
+    def initialize(user_options={}, default_options = {}, env = nil, &block)
       default_options = self.puma_default_options(env).merge(events: Events.new).merge(default_options)
 
       @_options    = UserFileDefaultOptions.new(user_options, default_options)
@@ -193,7 +194,7 @@ module Puma
       @file_dsl    = DSL.new(@_options.file_options, self)
       @default_dsl = DSL.new(@_options.default_options, self)
 
-      @puma_bundler_pruned = env.key? 'PUMA_BUNDLER_PRUNED'
+      @puma_bundler_pruned = env ? env.key?('PUMA_BUNDLER_PRUNED') : ENV.key?('PUMA_BUNDLER_PRUNED')
 
       if block
         configure(&block)
@@ -234,7 +235,7 @@ module Puma
       self
     end
 
-    def puma_default_options(env = ENV)
+    def puma_default_options(env = nil)
       defaults = DEFAULTS.dup
       defaults[:tcp_host] = self.class.default_tcp_host
       defaults[:binds] = [self.class.default_tcp_bind]
@@ -242,11 +243,11 @@ module Puma
       defaults
     end
 
-    def puma_options_from_env(env = ENV)
-      min = env['PUMA_MIN_THREADS'] || env['MIN_THREADS']
-      max = env['PUMA_MAX_THREADS'] || env['MAX_THREADS']
-      persistent_timeout = env['PUMA_PERSISTENT_TIMEOUT']
-      workers_env = env['WEB_CONCURRENCY']
+    def puma_options_from_env(env = nil)
+      min = env_value(env, 'PUMA_MIN_THREADS') || env_value(env, 'MIN_THREADS')
+      max = env_value(env, 'PUMA_MAX_THREADS') || env_value(env, 'MAX_THREADS')
+      persistent_timeout = env_value(env, 'PUMA_PERSISTENT_TIMEOUT')
+      workers_env = env_value(env, 'WEB_CONCURRENCY')
       workers = workers_env && workers_env.strip != "" ? parse_workers(workers_env.strip) : nil
 
       {
@@ -254,8 +255,12 @@ module Puma
         max_threads: max && max != "" && Integer(max),
         persistent_timeout: persistent_timeout && persistent_timeout != "" && Integer(persistent_timeout),
         workers: workers,
-        environment: env['APP_ENV'] || env['RACK_ENV'] || env['RAILS_ENV'],
+        environment: env_value(env, 'APP_ENV') || env_value(env, 'RACK_ENV') || env_value(env, 'RAILS_ENV'),
       }
+    end
+
+    def env_value(env, key)
+      env ? env[key] : ENV[key]
     end
 
     def load
@@ -377,7 +382,9 @@ module Puma
     end
 
     def self.default_tcp_bind(port = DEFAULTS[:tcp_port])
-      URI::Generic.build(scheme: 'tcp', host: default_tcp_host, port: Integer(port)).to_s
+      host = default_tcp_host
+      host = "[#{host}]" if host.include?(':') && !host.start_with?('[')
+      "tcp://#{host}:#{Integer(port)}"
     end
 
     def self.ipv6_interface_available?
@@ -442,7 +449,7 @@ module Puma
     def parse_workers(value)
       if value == :auto || value == 'auto'
         require_processor_counter
-        Integer(::Concurrent.available_processor_count)
+        Object.const_get('Concurrent').available_processor_count.to_i
       else
         Integer(value)
       end
@@ -467,7 +474,8 @@ module Puma
         require 'rack/builder'
         ::Rack::Builder
       rescue LoadError
-        require_relative 'rack/builder'
+        builder_file = File.join(__dir__, 'rack', 'builder')
+        require builder_file
         Puma::Rack::Builder
       end
     end
@@ -475,8 +483,14 @@ module Puma
     def load_rackup
       raise "Missing rackup file '#{rackup}'" unless File.exist?(rackup)
 
-      rack_app, rack_options = rack_builder.parse_file(rackup)
-      rack_options = rack_options || {}
+      parsed_rackup = rack_builder.parse_file(rackup)
+      rack_app = parsed_rackup
+      rack_options = nil
+      if parsed_rackup.is_a?(Array)
+        rack_app = parsed_rackup[0]
+        rack_options = parsed_rackup[1]
+      end
+      rack_options = {} unless rack_options
 
       options.file_options.merge!(rack_options)
 

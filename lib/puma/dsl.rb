@@ -132,8 +132,12 @@ module Puma
 
     def _load_from(path)
       if path
-        @path = path
-        instance_eval(File.read(path), path, 1)
+        if RUBY_ENGINE == "spinel"
+          raise NotImplementedError, "runtime configuration files are unavailable on Spinel"
+        else
+          @path = path
+          instance_eval(File.read(path), path, 1)
+        end
       end
     ensure
       _offer_plugins
@@ -329,7 +333,8 @@ module Puma
     #
     def port(port, host=nil)
       host ||= default_host
-      bind URI::Generic.build(scheme: 'tcp', host: host, port: Integer(port)).to_s
+      host = "[#{host}]" if host.include?(':') && !host.start_with?('[')
+      bind "tcp://#{host}:#{Integer(port)}"
     end
 
     # Define how long the TCP socket stays open when no data has been received.
@@ -1511,13 +1516,13 @@ module Puma
 
     # Specify the backend for the IO selector.
     #
-    # Provided values will be passed directly to +NIO::Selector.new+, with the
-    # exception of +:auto+ which will let nio4r choose the backend.
+    # +:auto+ uses nio4r when available and falls back to IO.select.
+    # +:select+ uses IO.select even when nio4r is installed. Other values
+    # are passed directly to +NIO::Selector.new+.
     #
     # Check the documentation of +NIO::Selector.backends+ for the list of valid
     # options. Note that the available options on your system will depend on the
-    # operating system. If you want to use the pure Ruby backend (not
-    # recommended due to its comparatively low performance), set environment
+    # operating system. To use nio4r's pure Ruby backend, set environment
     # variable +NIO4R_PURE+ to +true+.
     #
     # The default is +:auto+.
