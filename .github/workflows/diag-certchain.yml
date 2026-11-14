@@ -1,0 +1,31 @@
+name: diag-certchain
+on:
+  push:
+    branches: [diag-certchain]
+jobs:
+  diag:
+    name: ${{ matrix.os }} ${{ matrix.ruby }} ${{ matrix.mode }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        ruby: ['3.4']
+        mode: [only, full]
+    env:
+      CI: true
+      PUMA_NO_RUBOCOP: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ruby/setup-ruby-pkgs@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          apt-get: ragel
+          bundler-cache: true
+      - run: nproc; bundle exec rake compile
+      - if: matrix.mode == 'only'
+        run: for i in 1 2 3; do test/runner --verbose test_puma_server_ssl; done
+      - if: matrix.mode == 'full'
+        run: test/runner --verbose
+        env:
+          MT_CPU: 2

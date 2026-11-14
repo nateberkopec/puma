@@ -652,7 +652,16 @@ class TestPumaSSLCertChain < PumaTest
       subj_chain.map { |subj| subj.to_utf8[/CN=(.+ - )?([^,]+)/,2] } :
       subj_chain.map { |subj| subj.to_s(OpenSSL::X509::Name::RFC2253)[/CN=(.+ - )?([^,]+)/,2] }
 
+    t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    dumper = Thread.new do
+      sleep 3
+      $stdout.syswrite "\n=== STALL #{name} ===\n"
+      Thread.list.each { |t| $stdout.syswrite "--- #{t.inspect}\n#{(t.backtrace || []).first(25).join("\n")}\n" }
+      $stdout.syswrite "=== END STALL ===\n"
+    end
     @server&.stop true
+    dumper.kill
+    $stdout.syswrite "STOPTIME #{name} #{(Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0).round(3)}\n"
 
     assert_equal ['test.puma.localhost', 'intermediate.puma.localhost', 'ca.puma.localhost'], subj_map
   end
