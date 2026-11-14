@@ -631,6 +631,12 @@ class TestPumaSSLCertChain < PumaTest
   USE_TO_UTFT8 = OpenSSL::X509::Name.instance_methods(false).include? :to_utf8
 
   def cert_chain(&blk)
+    dumper = Thread.new do
+      sleep 3
+      $stdout.syswrite "\n=== STALL #{name} ===\n"
+      Thread.list.each { |t| $stdout.syswrite "--- #{t.inspect}\n#{(t.backtrace || []).first(25).join("\n")}\n" }
+      $stdout.syswrite "=== END STALL ===\n"
+    end
     app = lambda { |env| [200, {}, [env['rack.url_scheme']]] }
 
     @log_stdout = StringIO.new
@@ -653,12 +659,6 @@ class TestPumaSSLCertChain < PumaTest
       subj_chain.map { |subj| subj.to_s(OpenSSL::X509::Name::RFC2253)[/CN=(.+ - )?([^,]+)/,2] }
 
     t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    dumper = Thread.new do
-      sleep 3
-      $stdout.syswrite "\n=== STALL #{name} ===\n"
-      Thread.list.each { |t| $stdout.syswrite "--- #{t.inspect}\n#{(t.backtrace || []).first(25).join("\n")}\n" }
-      $stdout.syswrite "=== END STALL ===\n"
-    end
     @server&.stop true
     dumper.kill
     $stdout.syswrite "STOPTIME #{name} #{(Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0).round(3)}\n"

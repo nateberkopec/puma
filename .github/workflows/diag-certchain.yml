@@ -14,6 +14,7 @@ jobs:
         mode: [only, full]
     env:
       CI: true
+      PUMA_TEST_DEBUG: true
       PUMA_NO_RUBOCOP: true
     steps:
       - uses: actions/checkout@v6
@@ -24,7 +25,7 @@ jobs:
           bundler-cache: true
       - run: nproc; bundle exec rake compile
       - if: matrix.mode == 'only'
-        run: for i in 1 2 3; do test/runner --verbose test_puma_server_ssl; done
+        run: for i in $(seq 1 20); do test/runner --verbose --name=/TestPumaSSLCertChain/ test_puma_server_ssl; done
       - if: matrix.mode == 'full'
         run: test/runner --verbose
         env:
