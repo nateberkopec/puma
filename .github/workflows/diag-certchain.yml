@@ -11,7 +11,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm]
         ruby: ['3.4']
-        mode: [only, full]
+        mode: [only, full, reported, delayed]
     env:
       CI: true
       PUMA_TEST_DEBUG: true
@@ -23,9 +23,21 @@ jobs:
           ruby-version: ${{ matrix.ruby }}
           apt-get: ragel
           bundler-cache: true
+      - if: matrix.mode == 'reported'
+        run: |
+          git fetch origin 5e5f4b5f5623ec90ce8d1c957d3135b498000b4e
+          for path in lib/puma/server.rb lib/puma/client.rb lib/puma/reactor.rb lib/puma/minissl.rb; do
+            git show FETCH_HEAD:$path > $path
+          done
       - run: nproc; bundle exec rake compile
       - if: matrix.mode == 'only'
         run: for i in $(seq 1 20); do test/runner --verbose --name=/TestPumaSSLCertChain/ test_puma_server_ssl; done
+      - if: matrix.mode == 'reported'
+        run: for i in 1 2 3; do test/runner --verbose --name=/TestPumaSSLCertChain/ test_puma_server_ssl; done
+      - if: matrix.mode == 'delayed'
+        run: test/runner --verbose --name=/test_chain_cert_file_without_ca/ test_puma_server_ssl
+        env:
+          CERTCHAIN_DELAY_ADD: true
       - if: matrix.mode == 'full'
         run: test/runner --verbose
         env:

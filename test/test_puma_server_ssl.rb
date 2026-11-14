@@ -650,6 +650,14 @@ class TestPumaSSLCertChain < PumaTest
 
     @bind_port = (@server.add_ssl_listener HOST, 0, mini_ctx).addr[1]
     @server.run
+    if ENV['CERTCHAIN_DELAY_ADD']
+      @server.instance_variable_get(:@reactor).define_singleton_method(:add) do |client|
+        sleep 0.1 if client.io.ssl_version_state[1] != 'PINIT'
+        result = super(client)
+        $stdout.syswrite "ADD result=#{result} can_close=#{client.can_close?} ssl=#{client.io.ssl_version_state.inspect}\n"
+        result
+      end
+    end
 
     socket = new_socket ctx: new_ctx
 
