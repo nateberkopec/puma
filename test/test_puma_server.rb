@@ -2030,24 +2030,34 @@ class TestPumaServer < PumaTest
       [204, {}, []]
     end
 
-    socket = send_http "POST / HTTP/1.1\r\nHost: test.com\r\nContent-Type: text/plain\r\nContent-Length: 100000\r\n\r\na"
-    chunked = send_http "POST / HTTP/1.1\r\nHost: test.com\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n"
+    expect_continue = "Expect: 100-continue\r\n"
+    await_continue = ->(client) do
+      response = "HTTP/1.1 100 Continue\r\n\r\n"
+      assert_equal response, Timeout.timeout(2) { client.read(response.bytesize) }
+    end
+
+    socket = send_http "POST / HTTP/1.1\r\nHost: test.com\r\n#{expect_continue}Content-Type: text/plain\r\nContent-Length: 100000\r\n\r\na"
+    chunked = send_http "POST / HTTP/1.1\r\nHost: test.com\r\n#{expect_continue}Transfer-Encoding: chunked\r\n\r\n1\r\na\r\n"
+    [socket, chunked].each(&await_continue)
+
+    trickle = -> do
+      socket << "a"
+      chunked << "1\r\na\r\n"
+    end
+    trickle.call
     trickler = Thread.new do
       loop do
         sleep 0.05
-        socket << "a"
-        chunked << "1\r\na\r\n"
+        trickle.call
       end
     rescue IOError, SystemCallError
     end
 
-    sleep 0.1
-    stop_thread = Thread.new { @server.stop(true) }
-
-    assert stop_thread.join(2), "server did not stop after shutdown_body_timeout elapsed"
+    @server.stop
+    assert @server.thread.join(2), "server did not stop after shutdown_body_timeout elapsed"
     refute app_called
 
-    trickler.kill
+    trickler.kill.join
     socket.close
     chunked.close
     server_run(first_data_timeout: 10, shutdown_body_timeout: 0.25, queue_requests: false) do
@@ -2055,32 +2065,45 @@ class TestPumaServer < PumaTest
       [204, {}, []]
     end
 
-    silent = send_http "POST / HTTP/1.1\r\nHost: test.com\r\nContent-Length: 100000\r\n\r\na"
-    late = send_http "POST / HTTP/1.1\r\nHost: test.com\r\nContent-Length: 5\r\n\r\nh"
-    late_writer = Thread.new do
-      sleep 0.5
-      late << "ello"
-    rescue IOError, SystemCallError
+    silent = send_http "POST / HTTP/1.1\r\nHost: test.com\r\n#{expect_continue}Content-Length: 100000\r\n\r\na"
+    await_continue.call(silent)
+
+    monotonic_time = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+    checked_idle_deadline = false
+    granted_idle_grace = false
+    @server.define_singleton_method(:new_client) do |io, listener|
+      client = super(io, listener)
+      client.define_singleton_method(:check_deadline) do |&deadline|
+        if !checked_idle_deadline && deadline.call && !io.wait_readable(0)
+          checked_idle_deadline = true
+          super(&monotonic_time)
+          granted_idle_grace = true
+        else
+          super(&deadline)
+        end
+      end
+      client
     end
 
-    sleep 0.1
-    stop_thread = Thread.new { @server.stop(true) }
+    idle = send_http "POST / HTTP/1.1\r\nHost: test.com\r\n#{expect_continue}Content-Length: 5\r\n\r\nh"
+    await_continue.call(idle)
 
-    assert stop_thread.join(2), "server did not stop after shutdown_body_timeout elapsed"
+    stop_started_at = monotonic_time.call
+    @server.stop
+    expected_deadline = (stop_started_at + 0.25)..(monotonic_time.call + 0.25)
+    assert @server.thread.join(2), "server did not stop after shutdown_body_timeout elapsed"
     assert_equal "HTTP/1.1 408 Request Timeout", silent.read_response(timeout: 2).status
-    assert_equal "HTTP/1.1 408 Request Timeout", late.read_response(timeout: 2).status
+    assert_equal "HTTP/1.1 408 Request Timeout", idle.read_response(timeout: 2).status
     refute app_called
+    assert_includes expected_deadline, @server.shutdown_body_limit
+    assert checked_idle_deadline, "the incomplete body did not reach the idle deadline check"
+    refute granted_idle_grace, "an unreadable body was allowed to continue past the deadline"
   ensure
     trickler&.kill
-    late_writer&.join(2) || late_writer&.kill
-    begin
-      socket&.close
-      chunked&.close
-      silent&.close
-      late&.close
+    [socket, chunked, silent, idle].compact.each do |client|
+      client.close unless client.closed?
     rescue IOError, SystemCallError
     end
-    stop_thread&.join(2) || stop_thread&.kill
   end
 
   def test_shutdown_body_timeout_limits_continuously_streamed_chunked_body
@@ -2222,14 +2245,21 @@ class TestPumaServer < PumaTest
   end
 
   def test_zero_first_data_timeout_reads_complete_body_without_queue
+    body = "a" * 256 * 1024
+    request = "POST / HTTP/1.1\r\nHost: test.com\r\nContent-Length: #{body.bytesize}\r\n\r\n#{body}"
     body_sizes = []
     server_run(queue_requests: false, first_data_timeout: 0) do |env|
       body_sizes << env["rack.input"].read.bytesize
       [204, {}, []]
     end
 
-    body = "a" * 256 * 1024
-    socket = send_http "POST / HTTP/1.1\r\nHost: test.com\r\nContent-Length: #{body.bytesize}\r\n\r\n#{body}"
+    @server.define_singleton_method(:new_client) do |io, listener|
+      io.ungetbyte(io.read(request.bytesize))
+      super(io, listener)
+    end
+
+    socket = new_socket
+    socket << request
 
     assert_equal "HTTP/1.1 204 No Content", socket.read_response(timeout: 3).status
     assert_equal [body.bytesize], body_sizes
@@ -2241,22 +2271,32 @@ class TestPumaServer < PumaTest
   end
 
   def test_shutdown_body_timeout_bounds_many_streamed_chunked_bodies
-    server_run(first_data_timeout: 10, shutdown_body_timeout: 0.25) { [204, {}, []] }
+    chunk_size = Puma::Const::CHUNK_SIZE
+    chunk = "#{chunk_size.to_s(16)}\r\n#{'a' * chunk_size}\r\n"
+    headers = "POST / HTTP/1.1\r\nHost: test.com\r\nTransfer-Encoding: chunked\r\n"
+    assert_shared_shutdown_body_cutoff("#{headers}\r\n", chunk)
 
-    chunk = "#{(64 * 1024).to_s(16)}\r\n#{'a' * 64 * 1024}\r\n"
-    sockets = Array.new(4) { send_http "POST / HTTP/1.1\r\nHost: test.com\r\nTransfer-Encoding: chunked\r\n\r\n" }
+    server_thread = server_run(first_data_timeout: 10, shutdown_body_timeout: 0) { [204, {}, []] }
+    sockets = Array.new(4) { send_http "#{headers}Expect: 100-continue\r\n\r\n" }
+    sockets.each do |socket|
+      assert_equal "HTTP/1.1 100 Continue", socket.read_response.status
+    end
+
+    streaming = Queue.new
     streamers = sockets.map do |socket|
       Thread.new do
+        socket.write chunk
+        streaming << true
         loop { socket.write chunk }
       rescue IOError, SystemCallError
       end
     end
 
-    sleep 0.2
+    Timeout.timeout(5) { sockets.size.times { streaming.pop } }
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    stop_thread = Thread.new { @server.stop(true) }
+    @server.stop
 
-    assert stop_thread.join(3), "server did not stop while chunked bodies were streamed"
+    assert server_thread.join(3), "server did not stop while chunked bodies were streamed"
     assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 1.5
   ensure
     streamers&.each(&:kill)
@@ -2264,7 +2304,48 @@ class TestPumaServer < PumaTest
       socket.close
     rescue IOError, SystemCallError
     end
-    stop_thread&.join(2) || stop_thread&.kill
+  end
+
+  private def assert_shared_shutdown_body_cutoff(request, chunk)
+    server = Puma::Server.new(@app, @events, log_writer: @log_writer, shutdown_body_timeout: 0.25)
+    queued = []
+    server.instance_variable_set(:@thread_pool, queued)
+
+    clients = []
+    2.times do
+      io = StringIO.new
+      io.write request
+      io.rewind
+      io.define_singleton_method(:to_io) { self }
+      io.define_singleton_method(:wait_readable) { |_| !eof? }
+      client = Puma::Client.new(io, {"REMOTE_ADDR" => HOST.ip})
+      client.supported_http_methods = :any
+      clients << client
+      refute client.try_to_finish
+      io.string << chunk << "0\r\n\r\n"
+    end
+    early, late = clients
+
+    clock_gettime = Process.method(:clock_gettime)
+    test_thread = Thread.current
+    now = 0.0
+    clock = lambda do |*args|
+      Thread.current == test_thread && args == [Process::CLOCK_MONOTONIC] ? now : clock_gettime.call(*args)
+    end
+    Process.stub(:clock_gettime, clock) do
+      server.stop
+      now = 0.75
+      assert server.send(:reactor_wakeup, early)
+      assert_equal [early], queued
+
+      now = 1.5
+      assert server.send(:reactor_wakeup, late)
+      assert_equal [early], queued, "late upload was accepted after the shared shutdown cutoff"
+      assert_predicate late.io, :closed?
+      assert_includes late.io.string, "HTTP/1.1 408 Request Timeout"
+    end
+  ensure
+    clients&.each(&:close)
   end
 
   def test_zero_first_data_timeout_still_applies_shutdown_body_timeout
@@ -2686,6 +2767,34 @@ class TestPumaServer < PumaTest
 
     body = send_http_read_resp_body "GET http://test.com/public HTTP/1.1\r\nHost: test.com\r\nRequest-Path: /admin\r\n\r\n"
     assert_equal '|/public', body
+  end
+
+  def test_absolute_form_ftp_percent_encoded_slash_preserves_path_info
+    server_run { |env| [200, {}, [env['PATH_INFO'].to_s]] }
+
+    body = send_http_read_resp_body "GET ftp://example.com/%2Fadmin HTTP/1.1\r\nHost: test.com\r\n\r\n"
+    assert_equal '/%2Fadmin', body
+  end
+
+  def test_absolute_form_ftp_double_slash_preserves_path_info
+    server_run { |env| [200, {}, [env['PATH_INFO'].to_s]] }
+
+    body = send_http_read_resp_body "GET ftp://example.com//admin HTTP/1.1\r\nHost: test.com\r\n\r\n"
+    assert_equal '//admin', body
+  end
+
+  def test_absolute_form_ftp_uppercase_scheme_preserves_path_info
+    server_run { |env| [200, {}, [env['PATH_INFO'].to_s]] }
+
+    body = send_http_read_resp_body "GET FTP://example.com/%2Fadmin HTTP/1.1\r\nHost: test.com\r\n\r\n"
+    assert_equal '/%2Fadmin', body
+  end
+
+  def test_absolute_form_http_preserves_path_info_and_query_string
+    server_run { |env| [200, {}, ["#{env['PATH_INFO']}|#{env['QUERY_STRING']}"]] }
+
+    body = send_http_read_resp_body "GET http://example.com/admin?x=1 HTTP/1.1\r\nHost: test.com\r\n\r\n"
+    assert_equal '/admin|x=1', body
   end
 
   # see https://github.com/sinatra/sinatra/blob/main/examples/stream.ru
