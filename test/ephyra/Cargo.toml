@@ -1,0 +1,12 @@
+[package]
+name = "puma-state-properties"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dev-dependencies]
+ephyra = "=0.0.1"
+
+[profile.release]
+debug-assertions = true
+overflow-checks = true
